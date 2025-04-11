@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <cstring>
 #include <sys/time.h>
 
 float tdiff(struct timeval *start, struct timeval *end) {
@@ -15,6 +16,14 @@ struct Planet {
 	double y;
 	double vx;
 	double vy;
+};
+
+struct PlanetData {
+	double *mass;
+	double *x;
+	double *y;
+	double *vx;
+	double *vy;
 };
 
 unsigned long long seed = 100;
@@ -39,31 +48,34 @@ int timesteps;
 double dt;
 double G;
 
-Planet *next(Planet *planets) {
-	Planet *nextplanets = (Planet *)malloc(sizeof(Planet) * nplanets);
-	for (int i = 0; i < nplanets; i++) {
-		nextplanets[i].vx = planets[i].vx;
-		nextplanets[i].vy = planets[i].vy;
-		nextplanets[i].mass = planets[i].mass;
-		nextplanets[i].x = planets[i].x;
-		nextplanets[i].y = planets[i].y;
-	}
+void compute(PlanetData &data) {
+	double x[nplanets];
+	double y[nplanets];
 
-	for (int i = 0; i < nplanets; i++) {
-		for (int j = 0; j < nplanets; j++) {
-			double dx = planets[j].x - planets[i].x;
-			double dy = planets[j].y - planets[i].y;
-			double distSqr = dx * dx + dy * dy + 0.0001;
-			double invDist = planets[i].mass * planets[j].mass / sqrt(distSqr);
-			double invDist3 = invDist * invDist * invDist;
-			nextplanets[i].vx += dt * dx * invDist3;
-			nextplanets[i].vy += dt * dy * invDist3;
+	std::memcpy(x, data.x, sizeof(double) * nplanets);
+	std::memcpy(y, data.y, sizeof(double) * nplanets);
+
+	for (int t = 0; t < timesteps; t++) {
+
+		for (int i = 0; i < nplanets; i++) {
+			for (int j = 0; j < nplanets; j++) {
+				double dx = data.x[j] - data.x[i];
+				double dy = data.y[j] - data.y[i];
+
+				double distSqr = dx * dx + dy * dy + 0.0001;
+				double invDist = data.mass[i] * data.mass[j] / sqrt(distSqr);
+
+				double invDist3 = invDist * invDist * invDist;
+				data.vx[i] += dt * dx * invDist3;
+				data.vy[i] += dt * dy * invDist3;
+			}
+			x[i] += dt * data.vx[i];
+			y[i] += dt * data.vy[i];
 		}
-		nextplanets[i].x += dt * nextplanets[i].vx;
-		nextplanets[i].y += dt * nextplanets[i].vy;
+
+		std::memcpy(data.x, x, sizeof(double) * nplanets);
+		std::memcpy(data.y, y, sizeof(double) * nplanets);
 	}
-	free(planets);
-	return nextplanets;
 }
 
 int main(int argc, const char **argv) {
@@ -76,27 +88,31 @@ int main(int argc, const char **argv) {
 	dt = 0.001;
 	G = 6.6743;
 
-	Planet *planets = (Planet *)malloc(sizeof(Planet) * nplanets);
+	PlanetData planetData;
+	planetData.mass = (double *)malloc(sizeof(double) * nplanets);
+	planetData.x = (double *)malloc(sizeof(double) * nplanets);
+	planetData.y = (double *)malloc(sizeof(double) * nplanets);
+	planetData.vx = (double *)malloc(sizeof(double) * nplanets);
+	planetData.vy = (double *)malloc(sizeof(double) * nplanets);
+
 	for (int i = 0; i < nplanets; i++) {
-		planets[i].mass = randomDouble() * 10 + 0.2;
-		planets[i].x = (randomDouble() - 0.5) * 100 * pow(1 + nplanets, 0.4);
-		planets[i].y = (randomDouble() - 0.5) * 100 * pow(1 + nplanets, 0.4);
-		planets[i].vx = randomDouble() * 5 - 2.5;
-		planets[i].vy = randomDouble() * 5 - 2.5;
+		planetData.mass[i] = randomDouble() * 10 + 0.2;
+		planetData.x[i] = (randomDouble() - 0.5) * 100 * pow(1 + nplanets, 0.4);
+		planetData.y[i] = (randomDouble() - 0.5) * 100 * pow(1 + nplanets, 0.4);
+		planetData.vx[i] = randomDouble() * 5 - 2.5;
+		planetData.vy[i] = randomDouble() * 5 - 2.5;
 	}
 
 	struct timeval start, end;
 	gettimeofday(&start, NULL);
-	for (int i = 0; i < timesteps; i++) {
-		planets = next(planets);
-		// printf("x=%f y=%f vx=%f vy=%f\n", planets[nplanets-1].x,
-		// planets[nplanets-1].y, planets[nplanets-1].vx,
-		// planets[nplanets-1].vy);
-	}
+	compute(planetData);
 	gettimeofday(&end, NULL);
+
+	double x = planetData.x[nplanets - 1];
+	double y = planetData.y[nplanets - 1];
+
 	printf("Total time to run simulation %0.6f seconds, final location %f %f\n",
-		   tdiff(&start, &end), planets[nplanets - 1].x,
-		   planets[nplanets - 1].y);
+		   tdiff(&start, &end), x, y);
 
 	return 0;
 }
