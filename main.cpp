@@ -51,6 +51,7 @@ void compute(PlanetData &data) {
 	memcpy(y, data.y, BUFFER_SIZE);
 
 	for (int t = 0; t < timesteps; t++) {
+		#pragma omp parallel for schedule(static)
 		for (int i = 0; i < nplanets; i++) {
 			double vx_acc = 0;
 			double vy_acc = 0;
