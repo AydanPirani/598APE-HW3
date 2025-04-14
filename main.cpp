@@ -50,15 +50,22 @@ Planet *next(Planet *planets) {
 	}
 
 	for (int i = 0; i < nplanets; i++) {
+		double vx_acc = 0;
+		double vy_acc = 0;
+
 		for (int j = 0; j < nplanets; j++) {
 			double dx = planets[j].x - planets[i].x;
 			double dy = planets[j].y - planets[i].y;
 			double distSqr = dx * dx + dy * dy + 0.0001;
 			double invDist = planets[i].mass * planets[j].mass / sqrt(distSqr);
 			double invDist3 = invDist * invDist * invDist;
-			nextplanets[i].vx += dt * dx * invDist3;
-			nextplanets[i].vy += dt * dy * invDist3;
+			vx_acc += dx * invDist3;
+			vy_acc += dy * invDist3;
 		}
+
+		nextplanets[i].vx += dt * vx_acc;
+		nextplanets[i].vy += dt * vy_acc;
+
 		nextplanets[i].x += dt * nextplanets[i].vx;
 		nextplanets[i].y += dt * nextplanets[i].vy;
 	}
