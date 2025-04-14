@@ -2,19 +2,22 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <cstring>
 #include <sys/time.h>
+
+#define BUFFER_SIZE (sizeof(double) * nplanets)
 
 float tdiff(struct timeval *start, struct timeval *end) {
 	return (end->tv_sec - start->tv_sec) +
 		   1e-6 * (end->tv_usec - start->tv_usec);
 }
 
-struct Planet {
-	double mass;
-	double x;
-	double y;
-	double vx;
-	double vy;
+struct PlanetData {
+	double *mass;
+	double *x;
+	double *y;
+	double *vx;
+	double *vy;
 };
 
 unsigned long long seed = 100;
@@ -38,39 +41,40 @@ int nplanets;
 int timesteps;
 double dt;
 double G;
+double EPSILON = 0.0001;
 
-Planet *next(Planet *planets) {
-	Planet *nextplanets = (Planet *)malloc(sizeof(Planet) * nplanets);
-	for (int i = 0; i < nplanets; i++) {
-		nextplanets[i].vx = planets[i].vx;
-		nextplanets[i].vy = planets[i].vy;
-		nextplanets[i].mass = planets[i].mass;
-		nextplanets[i].x = planets[i].x;
-		nextplanets[i].y = planets[i].y;
-	}
+void compute(PlanetData &data) {
+	double *x = (double *)alloca(BUFFER_SIZE);
+	double *y = (double *)alloca(BUFFER_SIZE);
 
-	for (int i = 0; i < nplanets; i++) {
-		double vx_acc = 0;
-		double vy_acc = 0;
+	memcpy(x, data.x, BUFFER_SIZE);
+	memcpy(y, data.y, BUFFER_SIZE);
 
-		for (int j = 0; j < nplanets; j++) {
-			double dx = planets[j].x - planets[i].x;
-			double dy = planets[j].y - planets[i].y;
-			double distSqr = dx * dx + dy * dy + 0.0001;
-			double invDist = planets[i].mass * planets[j].mass / sqrt(distSqr);
-			double invDist3 = invDist * invDist * invDist;
-			vx_acc += dx * invDist3;
-			vy_acc += dy * invDist3;
+	for (int t = 0; t < timesteps; t++) {
+		for (int i = 0; i < nplanets; i++) {
+			double vx_acc = 0;
+			double vy_acc = 0;
+
+			for (int j = 0; j < nplanets; j++) {
+				double dx = data.x[j] - data.x[i];
+				double dy = data.y[j] - data.y[i];
+				double distSqr = dx * dx + dy * dy + EPSILON;
+				double invDist = data.mass[i] * data.mass[j] / sqrt(distSqr);
+				double invDist3 = invDist * invDist * invDist;
+				vx_acc += dx * invDist3;
+				vy_acc += dy * invDist3;
+			}
+
+			data.vx[i] += dt * vx_acc;
+			data.vy[i] += dt * vy_acc;
+
+			x[i] += dt * data.vx[i];
+			y[i] += dt * data.vy[i];
 		}
 
-		nextplanets[i].vx += dt * vx_acc;
-		nextplanets[i].vy += dt * vy_acc;
-
-		nextplanets[i].x += dt * nextplanets[i].vx;
-		nextplanets[i].y += dt * nextplanets[i].vy;
+		std::memcpy(data.x, x, BUFFER_SIZE);
+		std::memcpy(data.y, y, BUFFER_SIZE);
 	}
-	free(planets);
-	return nextplanets;
 }
 
 int main(int argc, const char **argv) {
@@ -83,27 +87,30 @@ int main(int argc, const char **argv) {
 	dt = 0.001;
 	G = 6.6743;
 
-	Planet *planets = (Planet *)malloc(sizeof(Planet) * nplanets);
+	PlanetData data;
+	data.mass = (double *)malloc(BUFFER_SIZE);
+	data.x = (double *)malloc(BUFFER_SIZE);
+	data.y = (double *)malloc(BUFFER_SIZE);
+	data.vx = (double *)malloc(BUFFER_SIZE);
+	data.vy = (double *)malloc(BUFFER_SIZE);
+
 	for (int i = 0; i < nplanets; i++) {
-		planets[i].mass = randomDouble() * 10 + 0.2;
-		planets[i].x = (randomDouble() - 0.5) * 100 * pow(1 + nplanets, 0.4);
-		planets[i].y = (randomDouble() - 0.5) * 100 * pow(1 + nplanets, 0.4);
-		planets[i].vx = randomDouble() * 5 - 2.5;
-		planets[i].vy = randomDouble() * 5 - 2.5;
+		data.mass[i] = randomDouble() * 10 + 0.2;
+		data.x[i] = (randomDouble() - 0.5) * 100 * pow(1 + nplanets, 0.4);
+		data.y[i] = (randomDouble() - 0.5) * 100 * pow(1 + nplanets, 0.4);
+		data.vx[i] = randomDouble() * 5 - 2.5;
+		data.vy[i] = randomDouble() * 5 - 2.5;
 	}
 
 	struct timeval start, end;
 	gettimeofday(&start, NULL);
-	for (int i = 0; i < timesteps; i++) {
-		planets = next(planets);
-		// printf("x=%f y=%f vx=%f vy=%f\n", planets[nplanets-1].x,
-		// planets[nplanets-1].y, planets[nplanets-1].vx,
-		// planets[nplanets-1].vy);
-	}
+	compute(data);
 	gettimeofday(&end, NULL);
+
+	double final_x = data.x[nplanets - 1];
+	double final_y = data.y[nplanets - 1];
 	printf("Total time to run simulation %0.6f seconds, final location %f %f\n",
-		   tdiff(&start, &end), planets[nplanets - 1].x,
-		   planets[nplanets - 1].y);
+		   tdiff(&start, &end), final_x, final_y);
 
 	return 0;
 }
