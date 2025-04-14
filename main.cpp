@@ -5,15 +5,22 @@
 #include <cstring>
 #include <sys/time.h>
 
+#include <omp.h>
+#include <immintrin.h>
+
 #define BUFFER_SIZE (sizeof(double) * nplanets)
 #define THREAD_THRESHOLD 512
+
+#define ALIGNMENT 64
+#define OFFSET (sizeof(__m256d) / sizeof(double))
+#define PREFETCH_DISTANCE 16
 
 float tdiff(struct timeval *start, struct timeval *end) {
 	return (end->tv_sec - start->tv_sec) +
 		   1e-6 * (end->tv_usec - start->tv_usec);
 }
 
-struct PlanetData {
+struct alignas(ALIGNMENT) PlanetData {
 	double *mass;
 	double *x;
 	double *y;
@@ -42,23 +49,52 @@ int nplanets;
 int timesteps;
 double dt;
 double G;
-double EPSILON = 0.0001;
+__m256d EPSILON = _mm256_set1_pd(0.0001);
 
-inline void inner_loop(PlanetData &data, int i, double &vx_ret, double &vy_ret) {
-	for (int j = 0; j < nplanets; j++) {
-		double dx = data.x[j] - data.x[i];
-		double dy = data.y[j] - data.y[i];
-		double distSqr = dx * dx + dy * dy + EPSILON;
-		double invDist = data.mass[i] * data.mass[j] / sqrt(distSqr);
-		double invDist3 = invDist * invDist * invDist;
-		vx_ret += dx * invDist3;
-		vy_ret += dy * invDist3;
+inline double reduce_add_pd256(__m256d vec) {
+    __m128d low = _mm256_castpd256_pd128(vec);
+    __m128d high = _mm256_extractf128_pd(vec, 1);
+    __m128d sum = _mm_add_pd(low, high); 
+    __m128d shuffled = _mm_unpackhi_pd(sum, sum); 
+    sum = _mm_add_sd(sum, shuffled); 
+    return _mm_cvtsd_f64(sum); 
+}
+
+
+inline void _inner_loop(PlanetData &data, int i, __m256d &vx_acc, __m256d &vy_acc) {
+	__m256d x_i = _mm256_set1_pd(data.x[i]);
+	__m256d y_i = _mm256_set1_pd(data.y[i]);
+	__m256d mass_i = _mm256_set1_pd(data.mass[i]);
+	
+	for (int j = 0; j < nplanets; j+=OFFSET) {
+		_mm_prefetch((const char *)&data.x[j + PREFETCH_DISTANCE], _MM_HINT_T0);
+		_mm_prefetch((const char *)&data.y[j + PREFETCH_DISTANCE], _MM_HINT_T0);
+		_mm_prefetch((const char *)&data.mass[j + PREFETCH_DISTANCE], _MM_HINT_T0);
+
+		__m256d x_j = _mm256_loadu_pd(&data.x[j]);
+		__m256d y_j = _mm256_loadu_pd(&data.y[j]);
+		__m256d mass_j = _mm256_loadu_pd(&data.mass[j]);
+		
+		__m256d dx = _mm256_sub_pd(x_j, x_i);
+		__m256d dy = _mm256_sub_pd(y_j, y_i);
+
+		__m256d dx2 = _mm256_mul_pd(dx, dx);
+		__m256d dy2 = _mm256_mul_pd(dy, dy);
+
+		__m256d dist2 = _mm256_add_pd(_mm256_add_pd(dx2, dy2), EPSILON);
+		__m256d dist = _mm256_sqrt_pd(dist2);
+
+		__m256d invDist = _mm256_div_pd(_mm256_mul_pd(mass_i, mass_j), dist);
+		__m256d invDist3 = _mm256_mul_pd(_mm256_mul_pd(invDist, invDist), invDist);
+		
+		vx_acc = _mm256_fmadd_pd(dx, invDist3, vx_acc);
+		vy_acc = _mm256_fmadd_pd(dy, invDist3, vy_acc);
 	}
 }
 
-inline void update_step(PlanetData &data, double* x, double* y, int i, double vx_acc, double vy_acc) {
-	data.vx[i] += dt * vx_acc;
-	data.vy[i] += dt * vy_acc;
+inline void update_step(PlanetData &data, double* x, double* y, int i, double dvx, double dvy) {
+	data.vx[i] += dt * dvx;
+	data.vy[i] += dt * dvy;
 	x[i] += dt * data.vx[i];
 	y[i] += dt * data.vy[i];
 }
@@ -67,11 +103,14 @@ inline void _compute_parallel(PlanetData &data, double* x, double* y) {
 	for (int t = 0; t < timesteps; t++) {
 		#pragma omp parallel for schedule(static)
 		for (int i = 0; i < nplanets; i++) {
-			double vx_acc = 0;
-			double vy_acc = 0;
-	
-			inner_loop(data, i, vx_acc, vy_acc);
-			update_step(data, x, y, i, vx_acc, vy_acc);
+			__m256d vx_acc = _mm256_setzero_pd();
+			__m256d vy_acc = _mm256_setzero_pd();
+			
+			_inner_loop(data, i, vx_acc, vy_acc);
+
+			double dvx = reduce_add_pd256(vx_acc);
+			double dvy = reduce_add_pd256(vy_acc);
+			update_step(data, x, y, i, dvx, dvy);
 		}
 	
 		std::memcpy(data.x, x, BUFFER_SIZE);
@@ -82,11 +121,15 @@ inline void _compute_parallel(PlanetData &data, double* x, double* y) {
 inline void _compute_naive(PlanetData &data, double* x, double* y) {
 	for (int t = 0; t < timesteps; t++) {
 		for (int i = 0; i < nplanets; i++) {
-			double vx_acc = 0;
-			double vy_acc = 0;
+			__m256d vx_acc = _mm256_setzero_pd();
+			__m256d vy_acc = _mm256_setzero_pd();
+			
+			_inner_loop(data, i, vx_acc, vy_acc);
 
-			inner_loop(data, i, vx_acc, vy_acc);
-			update_step(data, x, y, i, vx_acc, vy_acc);
+			double dvx = reduce_add_pd256(vx_acc);
+			double dvy = reduce_add_pd256(vy_acc);
+
+			update_step(data, x, y, i, dvx, dvy);
 		}
 
 		std::memcpy(data.x, x, BUFFER_SIZE);
@@ -95,11 +138,11 @@ inline void _compute_naive(PlanetData &data, double* x, double* y) {
 }
 
 inline void compute(PlanetData &data) {
-	double *x = (double *)alloca(BUFFER_SIZE);
-	double *y = (double *)alloca(BUFFER_SIZE);
+	double* x = (double *)__builtin_alloca_with_align(BUFFER_SIZE, ALIGNMENT);
+	double* y = (double *)__builtin_alloca_with_align(BUFFER_SIZE, ALIGNMENT);
 
-	memcpy(x, data.x, BUFFER_SIZE);
-	memcpy(y, data.y, BUFFER_SIZE);
+	std::memcpy(x, data.x, BUFFER_SIZE);
+	std::memcpy(y, data.y, BUFFER_SIZE);
 
 	if (nplanets >= THREAD_THRESHOLD) {
 		_compute_parallel(data, x, y);
@@ -114,10 +157,16 @@ int main(int argc, const char **argv) {
 		printf("Usage: %s <nplanets> <timesteps>\n", argv[0]);
 		return 1;
 	}
+
 	nplanets = atoi(argv[1]);
 	timesteps = atoi(argv[2]);
 	dt = 0.001;
 	G = 6.6743;
+
+	if (nplanets % OFFSET != 0) {
+		printf("nplanets must be a multiple of %ld\n", OFFSET);
+		exit(1);
+	}
 
 	PlanetData data;
 	data.mass = (double *)malloc(BUFFER_SIZE);
