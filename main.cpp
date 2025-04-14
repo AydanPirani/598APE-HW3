@@ -6,6 +6,7 @@
 #include <sys/time.h>
 
 #define BUFFER_SIZE (sizeof(double) * nplanets)
+#define THREAD_THRESHOLD 512
 
 float tdiff(struct timeval *start, struct timeval *end) {
 	return (end->tv_sec - start->tv_sec) +
@@ -43,39 +44,69 @@ double dt;
 double G;
 double EPSILON = 0.0001;
 
-void compute(PlanetData &data) {
+inline void inner_loop(PlanetData &data, int i, double &vx_ret, double &vy_ret) {
+	for (int j = 0; j < nplanets; j++) {
+		double dx = data.x[j] - data.x[i];
+		double dy = data.y[j] - data.y[i];
+		double distSqr = dx * dx + dy * dy + EPSILON;
+		double invDist = data.mass[i] * data.mass[j] / sqrt(distSqr);
+		double invDist3 = invDist * invDist * invDist;
+		vx_ret += dx * invDist3;
+		vy_ret += dy * invDist3;
+	}
+}
+
+inline void update_step(PlanetData &data, double* x, double* y, int i, double vx_acc, double vy_acc) {
+	data.vx[i] += dt * vx_acc;
+	data.vy[i] += dt * vy_acc;
+	x[i] += dt * data.vx[i];
+	y[i] += dt * data.vy[i];
+}
+
+inline void _compute_parallel(PlanetData &data, double* x, double* y) {
+	for (int t = 0; t < timesteps; t++) {
+		#pragma omp parallel for schedule(static)
+		for (int i = 0; i < nplanets; i++) {
+			double vx_acc = 0;
+			double vy_acc = 0;
+	
+			inner_loop(data, i, vx_acc, vy_acc);
+			update_step(data, x, y, i, vx_acc, vy_acc);
+		}
+	
+		std::memcpy(data.x, x, BUFFER_SIZE);
+		std::memcpy(data.y, y, BUFFER_SIZE);
+	}
+} 
+
+inline void _compute_naive(PlanetData &data, double* x, double* y) {
+	for (int t = 0; t < timesteps; t++) {
+		for (int i = 0; i < nplanets; i++) {
+			double vx_acc = 0;
+			double vy_acc = 0;
+
+			inner_loop(data, i, vx_acc, vy_acc);
+			update_step(data, x, y, i, vx_acc, vy_acc);
+		}
+
+		std::memcpy(data.x, x, BUFFER_SIZE);
+		std::memcpy(data.y, y, BUFFER_SIZE);
+	}
+}
+
+inline void compute(PlanetData &data) {
 	double *x = (double *)alloca(BUFFER_SIZE);
 	double *y = (double *)alloca(BUFFER_SIZE);
 
 	memcpy(x, data.x, BUFFER_SIZE);
 	memcpy(y, data.y, BUFFER_SIZE);
 
-	for (int t = 0; t < timesteps; t++) {
-		#pragma omp parallel for schedule(static)
-		for (int i = 0; i < nplanets; i++) {
-			double vx_acc = 0;
-			double vy_acc = 0;
-
-			for (int j = 0; j < nplanets; j++) {
-				double dx = data.x[j] - data.x[i];
-				double dy = data.y[j] - data.y[i];
-				double distSqr = dx * dx + dy * dy + EPSILON;
-				double invDist = data.mass[i] * data.mass[j] / sqrt(distSqr);
-				double invDist3 = invDist * invDist * invDist;
-				vx_acc += dx * invDist3;
-				vy_acc += dy * invDist3;
-			}
-
-			data.vx[i] += dt * vx_acc;
-			data.vy[i] += dt * vy_acc;
-
-			x[i] += dt * data.vx[i];
-			y[i] += dt * data.vy[i];
-		}
-
-		std::memcpy(data.x, x, BUFFER_SIZE);
-		std::memcpy(data.y, y, BUFFER_SIZE);
-	}
+	if (nplanets >= THREAD_THRESHOLD) {
+		_compute_parallel(data, x, y);
+		return;
+	} 
+	
+	_compute_naive(data, x, y);
 }
 
 int main(int argc, const char **argv) {
