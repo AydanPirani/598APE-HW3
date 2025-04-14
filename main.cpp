@@ -82,9 +82,9 @@ inline void _inner_loop(PlanetData &data, int i, __m256d &vx_acc, __m256d &vy_ac
 		__m256d dy2 = _mm256_mul_pd(dy, dy);
 
 		__m256d dist2 = _mm256_add_pd(_mm256_add_pd(dx2, dy2), EPSILON);
-		__m256d dist = _mm256_sqrt_pd(dist2);
+		__m256d dist_sqrt = _mm256_rsqrt14_pd(dist2);
 
-		__m256d invDist = _mm256_div_pd(_mm256_mul_pd(mass_i, mass_j), dist);
+		__m256d invDist = _mm256_mul_pd(_mm256_mul_pd(mass_i, mass_j), dist_sqrt);
 		__m256d invDist3 = _mm256_mul_pd(_mm256_mul_pd(invDist, invDist), invDist);
 		
 		vx_acc = _mm256_fmadd_pd(dx, invDist3, vx_acc);
